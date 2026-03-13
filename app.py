@@ -383,9 +383,17 @@ with tab_direct:
     def duplicate_row(idx):
         original_id = st.session_state["upload_rows"][idx]["id"]
         # Streamlit file_uploaders cannot be populated programmatically.
-        # So we can only copy the text values. Files will need to be re-uploaded.
+        # But we can store the copied files in session state to use later.
         prod_name = st.session_state.get(f"prod_name_{original_id}", "")
         prompt_val = st.session_state.get(f"prompt_{original_id}", "")
+        
+        prod_imgs = st.session_state.get(f"prod_imgs_{original_id}", [])
+        if not prod_imgs:
+            prod_imgs = st.session_state.get(f"copied_prod_imgs_{original_id}", [])
+            
+        ref_imgs = st.session_state.get(f"ref_imgs_{original_id}", [])
+        if not ref_imgs:
+            ref_imgs = st.session_state.get(f"copied_ref_imgs_{original_id}", [])
         
         new_id = st.session_state["row_counter"]
         st.session_state["upload_rows"].insert(idx + 1, {"id": new_id})
@@ -393,11 +401,20 @@ with tab_direct:
         # Pre-fill text inputs in session state before widget renders
         st.session_state[f"prod_name_{new_id}"] = prod_name + " (Copy)"
         st.session_state[f"prompt_{new_id}"] = prompt_val
+        st.session_state[f"copied_prod_imgs_{new_id}"] = prod_imgs
+        st.session_state[f"copied_ref_imgs_{new_id}"] = ref_imgs
         st.session_state["row_counter"] += 1
 
     def delete_row(idx):
         if len(st.session_state["upload_rows"]) > 1:
             st.session_state["upload_rows"].pop(idx)
+            
+    def remove_copied_image(state_key, idx):
+        if state_key in st.session_state:
+            new_list = list(st.session_state[state_key])
+            if 0 <= idx < len(new_list):
+                new_list.pop(idx)
+                st.session_state[state_key] = new_list
 
     # Render table headers
     cols = st.columns([0.5, 2, 2.5, 2.5, 2.5, 2])
@@ -420,9 +437,25 @@ with tab_direct:
             
         with cols[2]:
             st.file_uploader("Products", key=f"prod_imgs_{r_id}", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, label_visibility="collapsed")
+            copied_prod = st.session_state.get(f"copied_prod_imgs_{r_id}", [])
+            if copied_prod and not st.session_state.get(f"prod_imgs_{r_id}"):
+                for img_idx, img in enumerate(copied_prod):
+                    c1, c2 = st.columns([0.85, 0.15])
+                    with c1:
+                        st.caption(f"📎 {img.name}")
+                    with c2:
+                        st.button("✖", key=f"rm_p_{r_id}_{img_idx}", on_click=remove_copied_image, args=(f"copied_prod_imgs_{r_id}", img_idx), help="Remove image")
             
         with cols[3]:
             st.file_uploader("References", key=f"ref_imgs_{r_id}", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, label_visibility="collapsed")
+            copied_ref = st.session_state.get(f"copied_ref_imgs_{r_id}", [])
+            if copied_ref and not st.session_state.get(f"ref_imgs_{r_id}"):
+                for img_idx, img in enumerate(copied_ref):
+                    c1, c2 = st.columns([0.85, 0.15])
+                    with c1:
+                        st.caption(f"📎 {img.name}")
+                    with c2:
+                        st.button("✖", key=f"rm_r_{r_id}_{img_idx}", on_click=remove_copied_image, args=(f"copied_ref_imgs_{r_id}", img_idx), help="Remove image")
             
         with cols[4]:
             st.text_area("Prompt", key=f"prompt_{r_id}", label_visibility="collapsed", placeholder="Prompt...", height=68)
@@ -460,7 +493,7 @@ with tab_direct:
     valid_rows_count = sum(
         1 for row in st.session_state["upload_rows"] 
         if st.session_state.get(f"prod_name_{row['id']}", "").strip() 
-        and st.session_state.get(f"prod_imgs_{row['id']}", [])
+        and (st.session_state.get(f"prod_imgs_{row['id']}", []) or st.session_state.get(f"copied_prod_imgs_{row['id']}", []))
     )
     forecast_total = est_inr * valid_rows_count
     
@@ -475,7 +508,12 @@ with tab_direct:
             p_name = st.session_state.get(f"prod_name_{r_id}", "").strip()
             p_prompt = st.session_state.get(f"prompt_{r_id}", "").strip()
             p_imgs = st.session_state.get(f"prod_imgs_{r_id}", [])
+            if not p_imgs:
+                p_imgs = st.session_state.get(f"copied_prod_imgs_{r_id}", [])
+                
             r_imgs = st.session_state.get(f"ref_imgs_{r_id}", [])
+            if not r_imgs:
+                r_imgs = st.session_state.get(f"copied_ref_imgs_{r_id}", [])
             
             if p_name and p_imgs:
                 items_to_process.append({
@@ -508,6 +546,7 @@ with tab_direct:
                 product_imgs = []
                 for f in item["prod_files"]:
                     try:
+                        f.seek(0)
                         img = Image.open(f)
                         img.load()
                         product_imgs.append({"name": Path(f.name).stem, "filename": f.name, "image": img})
@@ -517,6 +556,7 @@ with tab_direct:
                 reference_imgs = []
                 for f in item["ref_files"]:
                     try:
+                        f.seek(0)
                         img = Image.open(f)
                         img.load()
                         reference_imgs.append({"name": Path(f.name).stem, "filename": f.name, "image": img})
