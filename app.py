@@ -51,12 +51,25 @@ def load_history():
     return []
 
 def save_history(history_list):
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history_list, f, indent=4)
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history_list, f, indent=4)
+    except Exception:
+        pass # Ignore in cloud environments without write access
 
 def get_drive_service():
     creds = None
-    if os.path.exists('token.json'):
+    
+    # Check Streamlit Secrets first
+    if "google_drive_token" in st.secrets:
+        try:
+            token_data = dict(st.secrets["google_drive_token"])
+            creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+        except Exception:
+            pass
+            
+    # Fallback to local token.json
+    if not creds and os.path.exists('token.json'):
         creds = Credentials.from_authorized_user_file('token.json', SCOPES)
         
     if not creds or not creds.valid:
@@ -64,7 +77,8 @@ def get_drive_service():
             try:
                 creds.refresh(Request())
             except Exception:
-                os.remove('token.json')
+                if os.path.exists('token.json'):
+                    os.remove('token.json')
                 return None
         else:
             client_secrets = glob.glob('client_secret*.json')
@@ -73,8 +87,11 @@ def get_drive_service():
             flow = InstalledAppFlow.from_client_secrets_file(client_secrets[0], SCOPES)
             creds = flow.run_local_server(port=0)
             
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+        try:
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+        except Exception:
+            pass # Ignore read-only filesystems
 
     try:
         service = build('drive', 'v3', credentials=creds)
@@ -84,7 +101,7 @@ def get_drive_service():
 
 def upload_batch_to_drive(batch_id, images_list, results_df):
     """Uploads a batch to Google Drive synchronously. Safe to call from a thread."""
-    if not os.path.exists('token.json'):
+    if not os.path.exists('token.json') and "google_drive_token" not in st.secrets:
         return "Failed: Drive not authenticated in Sidebar"
         
     service = get_drive_service()
@@ -473,12 +490,13 @@ st.sidebar.header("⚙️ Configuration")
 
 # Google Drive Auth
 st.sidebar.markdown("### ☁️ Google Drive Auth")
-if os.path.exists('token.json'):
+if "google_drive_token" in st.secrets or os.path.exists('token.json'):
     st.sidebar.success("✅ Drive Authenticated")
 else:
     client_secrets = glob.glob('client_secret*.json')
     if not client_secrets:
-        st.sidebar.error("⚠️ Missing `client_secret` JSON file in folder.")
+        st.sidebar.error("⚠️ Drive Not Authenticated")
+        st.sidebar.caption("Cloud Deployment: Please add your local `token.json` contents to Streamlit Secrets under `[google_drive_token]`.")
     else:
         st.sidebar.warning("🔴 Drive Not Authenticated")
         if st.sidebar.button("🔗 Log in to Google Drive"):
