@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Streamlit
+.streamlit/
+
+# Google Drive API & App Data
+client_secret*.json
+*.json
+!history.json
+token.json
+gen-lang-client*.json
+history.json
+generated_images/

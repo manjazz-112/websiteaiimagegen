@@ -14,12 +14,171 @@ from PIL import Image
 load_dotenv()
 
 # Try importing required libraries
+import json
+import uuid
+import datetime
+import glob
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+
 try:
     from google import genai
     from google.genai import types
 except ImportError:
     st.error("Google GenAI SDK not found. Please install via: pip install google-genai")
     st.stop()
+
+
+# ==========================================
+# HISTORY & GOOGLE DRIVE LOGIC
+# ==========================================
+
+HISTORY_FILE = "history.json"
+DRIVE_FOLDER_ID = "16P-KCZ2Vdl76csQPvFESZDgQ7QM3to5H"
+MAX_HISTORY_ITEMS = 5
+SCOPES = ['https://www.googleapis.com/auth/drive']
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_history(history_list):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history_list, f, indent=4)
+
+def get_drive_service():
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                os.remove('token.json')
+                return None
+        else:
+            client_secrets = glob.glob('client_secret*.json')
+            if not client_secrets:
+                return None
+            flow = InstalledAppFlow.from_client_secrets_file(client_secrets[0], SCOPES)
+            creds = flow.run_local_server(port=0)
+            
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build('drive', 'v3', credentials=creds)
+        return service
+    except Exception:
+        return None
+
+def upload_batch_to_drive(batch_id, images_list, results_df):
+    """Uploads a batch to Google Drive synchronously. Safe to call from a thread."""
+    if not os.path.exists('token.json'):
+        return "Failed: Drive not authenticated in Sidebar"
+        
+    service = get_drive_service()
+    if not service:
+        return "Failed: OAuth authentication error"
+
+    try:
+        # Create a folder for this batch
+        folder_metadata = {
+            'name': f'Batch_{batch_id}',
+            'parents': [DRIVE_FOLDER_ID],
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        folder_id = folder.get('id')
+
+        # Upload images
+        for img_info in images_list:
+            file_metadata = {
+                'name': f"{img_info['product_id']}_generated.png",
+                'parents': [folder_id]
+            }
+            media = MediaIoBaseUpload(io.BytesIO(img_info['data']), mimetype='image/png', resumable=True)
+            service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+
+        # Upload CSV
+        csv_bytes = results_df.to_csv(index=False).encode('utf-8')
+        csv_metadata = {
+            'name': f"results_{batch_id}.csv",
+            'parents': [folder_id]
+        }
+        csv_media = MediaIoBaseUpload(io.BytesIO(csv_bytes), mimetype='text/csv', resumable=True)
+        service.files().create(body=csv_metadata, media_body=csv_media, fields='id').execute()
+        
+        # Enforce exactly 5 items limit in Drive
+        cleanup_old_drive_folders(service)
+        
+        return "Success"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def cleanup_old_drive_folders(service):
+    """Keeps only the 5 most recent folders created in the target Drive folder."""
+    try:
+        query = f"'{DRIVE_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        results = service.files().list(q=query, orderBy="createdTime desc", fields="files(id, name, createdTime)").execute()
+        folders = results.get('files', [])
+        
+        # If more than 5, delete the oldest ones
+        if len(folders) > MAX_HISTORY_ITEMS:
+            for old_folder in folders[MAX_HISTORY_ITEMS:]:
+                service.files().delete(fileId=old_folder['id']).execute()
+    except Exception:
+        pass
+
+# Provide an executor for background tasks
+if 'executor' not in st.session_state:
+    import concurrent.futures
+    st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+def schedule_drive_upload_and_log(batch_id, images_list, results_df, total_cost):
+    """Fires off the drive upload in the background and logs to history.json immediately."""
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    total_bytes = sum(len(img['data']) for img in images_list)
+    size_mb = round(total_bytes / (1024 * 1024), 2)
+    num_images = len(images_list)
+    
+    history_entry = {
+        "batch_id": batch_id,
+        "date": date_str,
+        "images": num_images,
+        "cost": round(total_cost, 2),
+        "size_mb": size_mb,
+        "status": "Uploading..."
+    }
+    
+    hist = load_history()
+    hist.insert(0, history_entry)
+    if len(hist) > MAX_HISTORY_ITEMS:
+        hist = hist[:MAX_HISTORY_ITEMS]
+    save_history(hist)
+    
+    def background_task(b_id, imgs, df):
+        status = upload_batch_to_drive(b_id, imgs, df)
+        # Once done, update the status in history.json
+        current_hist = load_history()
+        for idx, item in enumerate(current_hist):
+            if item["batch_id"] == b_id:
+                current_hist[idx]["status"] = "Saved to Drive" if status == "Success" else status
+                break
+        save_history(current_hist)
+
+    st.session_state.executor.submit(background_task, batch_id, images_list, results_df.copy())
 
 # Set up page configurations
 st.set_page_config(page_title="AI Product Image Generator", layout="wide", page_icon="🛍️")
@@ -45,6 +204,22 @@ MODEL_PRICING = {
     "gemini-2.5-flash-image": {
         "input_per_1M_tokens": 2.0,
         "image_output": 0.134
+    },
+    "gemini-1.5-flash": {
+        "input_per_1M_tokens": 0.075,
+        "image_output": 0.0003
+    },
+    "gemini-1.5-pro": {
+        "input_per_1M_tokens": 1.25,
+        "image_output": 0.007
+    },
+    "gemini-2.0-flash-exp": {
+        "input_per_1M_tokens": 0.10,
+        "image_output": 0.0005
+    },
+    "gemini-2.5-flash": {
+        "input_per_1M_tokens": 0.15,
+        "image_output": 0.0005
     }
 }
 
@@ -296,6 +471,24 @@ def calculate_real_cost(model_name, prompt_tokens, images=1):
 
 st.sidebar.header("⚙️ Configuration")
 
+# Google Drive Auth
+st.sidebar.markdown("### ☁️ Google Drive Auth")
+if os.path.exists('token.json'):
+    st.sidebar.success("✅ Drive Authenticated")
+else:
+    client_secrets = glob.glob('client_secret*.json')
+    if not client_secrets:
+        st.sidebar.error("⚠️ Missing `client_secret` JSON file in folder.")
+    else:
+        st.sidebar.warning("🔴 Drive Not Authenticated")
+        if st.sidebar.button("🔗 Log in to Google Drive"):
+            with st.spinner("Opening browser to authenticate... Check popup tab."):
+                service = get_drive_service()
+                if service:
+                    st.rerun()
+
+st.sidebar.markdown("---")
+
 # Gemini API Key
 default_gemini_key = os.getenv("GEMINI_API_KEY", "")
 if default_gemini_key:
@@ -309,12 +502,42 @@ gemini_api_key = st.sidebar.text_input(
     type="password",
     help="Get your free API key from https://aistudio.google.com/apikey"
 )
+st.sidebar.write("")
+st.sidebar.markdown("[Get API Key](https://aistudio.google.com/app/apikey)")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown('<div class="stMarkdown"><h3 style="margin-bottom: -15px;">☁️ HISTORY LOG</h3></div>', unsafe_allow_html=True)
+st.sidebar.caption("Auto-saves the last 5 batches to Google Drive.")
+
+hist_data = load_history()
+if not hist_data:
+    st.sidebar.info("No past batches found.")
+else:
+    for idx, entry in enumerate(hist_data):
+        with st.sidebar.expander(f"Batch {entry['batch_id']} - {entry['date'][:10]}"):
+            st.caption(f"**Status:** {entry['status']}")
+            st.caption(f"**Time:** {entry['date']}")
+            st.caption(f"**Images:** {entry['images']} | **Size:** {entry['size_mb']} MB")
+            st.caption(f"**Cost:** ₹{entry['cost']}")
+            dl_link = f"https://drive.google.com/drive/folders/{DRIVE_FOLDER_ID}"
+            st.markdown(f"[📂 Open in Drive]({dl_link})")
+
+st.sidebar.markdown("---")
+
+# --- MODEL SETTINGS ---
+st.sidebar.markdown('<div class="stMarkdown"><h3 style="margin-bottom: -15px;">SETTINGS</h3></div>', unsafe_allow_html=True)
 
 # Model selection
+# Approximate cost in INR per image generation (assuming ~500 input tokens + 1 image output)
+# Note: Google's exact pricing varies by tier/region. These are safe estimates.
 PRICING_INR = {
     "gemini-3-pro-image-preview": 3.0,     # Placeholder estimate (Pro is usually more expensive)
     "gemini-3.1-flash-image-preview": 2.5, # ~ $0.03
     "gemini-2.5-flash-image": 2.5,         # ~ $0.03
+    "gemini-1.5-flash": 0.05,              # Very cheap, fast
+    "gemini-1.5-pro": 1.50,                # High quality, more expensive
+    "gemini-2.0-flash-exp": 0.08,          # Experimental 2.0 Flash
+    "gemini-2.5-flash": 0.10,              # Newest Flash
 }
 
 model_name = st.sidebar.selectbox(
@@ -323,14 +546,22 @@ model_name = st.sidebar.selectbox(
         "gemini-3-pro-image-preview",
         "gemini-3.1-flash-image-preview",
         "gemini-2.5-flash-image",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
     ],
     format_func=lambda x: f"{ {
         'gemini-3-pro-image-preview': '🌟 Nano Banana Pro (Gemini 3 Pro)',
         'gemini-3.1-flash-image-preview': '⚡ Nano Banana 2 (Gemini 3.1 Flash)',
         'gemini-2.5-flash-image': '💨 Gemini 2.5 Flash Image',
-    }.get(x, x) } — ₹{PRICING_INR.get(x, 0.0)}/img",
+        'gemini-2.5-flash': '⚡ Gemini 2.5 Flash (Newest)',
+        'gemini-2.0-flash-exp': '🧪 Gemini 2.0 Flash (Experimental)',
+        'gemini-1.5-pro': '🌟 Gemini 1.5 Pro (Best Quality)',
+        'gemini-1.5-flash': '💨 Gemini 1.5 Flash (Cheapest/Fastest)',
+    }.get(x, x) } — ~₹{PRICING_INR.get(x, 0.0)}/img",
     index=0,
-    help="Nano Banana Pro = best quality. Nano Banana 2 = faster."
+    help="Nano Banana Pro = best quality. Nano Banana 2 = faster. 1.5/2.0 Flash models are cheapest."
 )
 
 # System prompt
@@ -640,7 +871,13 @@ with tab_direct:
             
             st.session_state["results"] = [r for r in all_results if r]
             st.session_state["generated_images"] = all_gen_images
-
+            
+            # Trigger Background Drive Upload
+            if all_gen_images:
+                b_id = str(uuid.uuid4())[:8]
+                r_df = pd.DataFrame(st.session_state["results"])
+                t_cost = float(r_df["Cost (INR)"].sum()) if "Cost (INR)" in r_df.columns else 0.0
+                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost)
 
 with tab_csv:
     st.write("### 📑 Bulk Generation via CSV & Drive")
@@ -827,6 +1064,13 @@ with tab_csv:
             # Store in session state
             st.session_state["results"] = [r for r in all_results if r]
             st.session_state["generated_images"] = all_gen_images
+            
+            # Trigger Background Drive Upload
+            if all_gen_images:
+                b_id = str(uuid.uuid4())[:8]
+                r_df = pd.DataFrame(st.session_state["results"])
+                t_cost = float(r_df["Cost (INR)"].sum()) if "Cost (INR)" in r_df.columns else 0.0
+                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost)
 
 
 # ==========================================
