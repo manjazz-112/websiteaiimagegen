@@ -99,7 +99,7 @@ def get_drive_service():
     except Exception:
         return None
 
-def upload_batch_to_drive(batch_id, images_list, results_df):
+def upload_batch_to_drive(batch_id, images_list, results_df, custom_folder_name=None):
     """Uploads a batch to Google Drive synchronously. Safe to call from a thread."""
     if not os.path.exists('token.json') and "google_drive_token" not in st.secrets:
         return "Failed: Drive not authenticated in Sidebar"
@@ -111,7 +111,7 @@ def upload_batch_to_drive(batch_id, images_list, results_df):
     try:
         # Create a folder for this batch
         folder_metadata = {
-            'name': f'Batch_{batch_id}',
+            'name': custom_folder_name.strip() if custom_folder_name and custom_folder_name.strip() else f'Batch_{batch_id}',
             'parents': [DRIVE_FOLDER_ID],
             'mimeType': 'application/vnd.google-apps.folder'
         }
@@ -162,7 +162,7 @@ if 'executor' not in st.session_state:
     import concurrent.futures
     st.session_state.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
-def schedule_drive_upload_and_log(batch_id, images_list, results_df, total_cost):
+def schedule_drive_upload_and_log(batch_id, images_list, results_df, total_cost, custom_folder_name=None):
     """Fires off the drive upload in the background and logs to history.json immediately."""
     date_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -185,8 +185,8 @@ def schedule_drive_upload_and_log(batch_id, images_list, results_df, total_cost)
         hist = hist[:MAX_HISTORY_ITEMS]
     save_history(hist)
     
-    def background_task(b_id, imgs, df):
-        status = upload_batch_to_drive(b_id, imgs, df)
+    def background_task(b_id, imgs, df, folder_name):
+        status = upload_batch_to_drive(b_id, imgs, df, folder_name)
         # Once done, update the status in history.json
         current_hist = load_history()
         for idx, item in enumerate(current_hist):
@@ -195,7 +195,7 @@ def schedule_drive_upload_and_log(batch_id, images_list, results_df, total_cost)
                 break
         save_history(current_hist)
 
-    st.session_state.executor.submit(background_task, batch_id, images_list, results_df.copy())
+    st.session_state.executor.submit(background_task, batch_id, images_list, results_df.copy(), custom_folder_name)
 
 # Set up page configurations
 st.set_page_config(page_title="AI Product Image Generator", layout="wide", page_icon="🛍️")
@@ -601,10 +601,6 @@ system_prompt = st.sidebar.text_area(
     help="Instructions that guide image generation."
 )
 
-with st.sidebar.expander("🛠️ Advanced Gen Settings", expanded=False):
-    gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=42, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
-    gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=0)
-
 if not gemini_api_key:
     st.info("👈 Enter your Gemini API key in the sidebar to get started.")
     st.stop()
@@ -749,6 +745,12 @@ with tab_direct:
     if valid_rows_count > 0:
         st.info(f"**Estimated Cost for {valid_rows_count} items:** ~₹{round(forecast_total, 2)} (₹{est_inr}/image)")
     
+    custom_folder_direct = st.text_input("Drive Save Folder Name (Optional)", key="drive_folder_direct", placeholder="e.g. Summer Collection 2026", help="Overrides the default Batch ID folder name in Google Drive.")
+    
+    with st.expander("🛠️ Advanced Gen Settings", expanded=False):
+        gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=42, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
+        gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=0)
+
     if st.button("🚀 Start Generation (Direct Upload)", use_container_width=True):
         # Gather data from session state
         items_to_process = []
@@ -895,7 +897,7 @@ with tab_direct:
                 b_id = str(uuid.uuid4())[:8]
                 r_df = pd.DataFrame(st.session_state["results"])
                 t_cost = float(r_df["Cost (INR)"].sum()) if "Cost (INR)" in r_df.columns else 0.0
-                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost)
+                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost, custom_folder_direct)
 
 with tab_csv:
     st.write("### 📑 Bulk Generation via CSV & Drive")
@@ -951,6 +953,8 @@ with tab_csv:
         
         if len(df) > 0:
             st.info(f"**Estimated Cost for {len(df)} items:** ~₹{round(forecast_total, 2)} (₹{est_inr}/image)")
+        
+        custom_folder_csv = st.text_input("Drive Save Folder Name (Optional)", key="drive_folder_csv", placeholder="e.g. Summer Collection 2026", help="Overrides the default Batch ID folder name in Google Drive.")
         
         if st.button("🚀 Start Parallel Generation (CSV)", use_container_width=True):
             progress_bar = st.progress(0)
@@ -1088,7 +1092,7 @@ with tab_csv:
                 b_id = str(uuid.uuid4())[:8]
                 r_df = pd.DataFrame(st.session_state["results"])
                 t_cost = float(r_df["Cost (INR)"].sum()) if "Cost (INR)" in r_df.columns else 0.0
-                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost)
+                schedule_drive_upload_and_log(b_id, all_gen_images, r_df, t_cost, custom_folder_csv)
 
 
 # ==========================================
