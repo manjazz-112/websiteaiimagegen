@@ -748,7 +748,7 @@ with tab_direct:
     custom_folder_direct = st.text_input("Drive Save Folder Name (Optional)", key="drive_folder_direct", placeholder="e.g. Summer Collection 2026", help="Overrides the default Batch ID folder name in Google Drive.")
     
     with st.expander("🛠️ Advanced Gen Settings", expanded=False):
-        gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=42, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
+        gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=1000000, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
         gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=0)
 
     if st.button("🚀 Start Generation (Direct Upload)", use_container_width=True):
