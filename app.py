@@ -585,19 +585,19 @@ model_name = st.sidebar.selectbox(
 # System prompt
 default_system_prompt = """You are an elite AI image-generation engine explicitly designed for high-end fashion e-commerce.
 
-[CRITICAL MASTER RULES - OBEY EXACTLY]
-1. PRODUCT IDENTITY IS ABSOLUTE: You MUST produce an image where the garments/products are 100% IDENTICAL to the provided Product Image reference. Do NOT alter the color, fabric texture, embroidery, design, buttons, or fit under any circumstance.
-2. MODEL FACE INCORPORATION: If a "Model face reference" is provided, you MUST map the facial features (eyes, nose, mouth structure, jawline) exactly to your generated model. 
-3. PREVENT FACIAL DEFORMITIES: Enforce strict anatomical symmetry. Ensure eyes are exactly proportional and perfectly aligned. Do NOT generate crossed eyes, asymmetrical pupils, melting skin, or any uncanny "plastic" AI artifacts. Keep expressions calm, confident, and professional.
-4. STUDIO & SETTING: If a "Studio/background setting reference" is provided, replicate the environment, lighting, architecture, and shadows faithfully. If no background is instructed, default to a clean, professional fashion studio backdrop.
+[CRITICAL MASTER RULES - OBEY EXACTLY AND RIGIDLY]
+1. PRODUCT IDENTITY IS ABSOLUTE: You MUST produce an image where the garments/products are 100% IDENTICAL to the provided 'Product Image' reference. Do NOT alter the color, fabric texture, embroidery, design, buttons, or fit under any circumstance. Only the product itself should look exactly like the Product Image.
+2. RF SETTING (RESULT FINAL SETTING) PRIORITY: If an 'RF Setting / Final Style' reference is provided, the final resultant image MUST have the lighting, pose, and background exactly like the RF Setting. Do NOT copy the pose, background, or lighting from the Product Image. The RF Setting is the MASTER composition template.
+3. MODEL FACE INCORPORATION: If a 'Model face reference' is provided, the final model MUST look exactly like this provided face. Do NOT pick up the face from the RF Setting or the Product Image. The provided Model Face overrides all other faces.
+4. PREVENT DEFORMITIES: Enforce strict anatomical symmetry. Ensure eyes are exactly proportional and perfectly aligned. Do NOT generate crossed eyes, asymmetrical pupils, melting skin, or any uncanny AI artifacts. Keep expressions calm and professional.
 5. NO HALLUCINATIONS: Do not invent details, accessories, or background elements not requested or not present in the reference imagery.
 
-Interpret all user input as literal, non-negotiable visual directives for image composition. If conflicts occur, prioritize: Product Accuracy -> Facial Symmetry & Likeness -> Background Integrity."""
+Interpret all user input as literal, non-negotiable visual directives for image composition. Priority: Use the RF Setting for pose/background/lighting -> Use the Model Face for the person -> Use the Product Image for the garment exactly."""
 
 system_prompt = st.sidebar.text_area(
     "System Prompt",
     value=default_system_prompt,
-    height=250,
+    height=300,
     help="Instructions that guide image generation."
 )
 
@@ -615,108 +615,186 @@ client = genai.Client(api_key=gemini_api_key)
 tab_direct, tab_csv = st.tabs(["📤 Direct Upload", "📑 CSV / Drive Mode"])
 
 with tab_direct:
-    st.write("### 📤 Direct Upload Interface")
+    st.write("### 📤 Visual Workspace Builder")
+    st.write("Drag and drop all your images here, categorize them, and map them below.")
     
-    if "upload_rows" not in st.session_state:
-        st.session_state["upload_rows"] = [{"id": 0}]
-        st.session_state["row_counter"] = 1
+    # --- 1. THE IMAGE POOL ---
+    if "workspace_files" not in st.session_state:
+        st.session_state["workspace_files"] = {}  # {filename: {"data": bytes, "type": "Product Image", "mime": str}}
         
-    def add_row():
-        st.session_state["upload_rows"].append({"id": st.session_state["row_counter"]})
-        st.session_state["row_counter"] += 1
-        
-    def duplicate_row(idx):
-        original_id = st.session_state["upload_rows"][idx]["id"]
-        # Streamlit file_uploaders cannot be populated programmatically.
-        # But we can store the copied files in session state to use later.
-        prod_name = st.session_state.get(f"prod_name_{original_id}", "")
-        prompt_val = st.session_state.get(f"prompt_{original_id}", "")
-        
-        prod_imgs = st.session_state.get(f"prod_imgs_{original_id}", [])
-        if not prod_imgs:
-            prod_imgs = st.session_state.get(f"copied_prod_imgs_{original_id}", [])
-            
-        ref_imgs = st.session_state.get(f"ref_imgs_{original_id}", [])
-        if not ref_imgs:
-            ref_imgs = st.session_state.get(f"copied_ref_imgs_{original_id}", [])
-        
-        new_id = st.session_state["row_counter"]
-        st.session_state["upload_rows"].insert(idx + 1, {"id": new_id})
-        
-        # Pre-fill text inputs in session state before widget renders
-        st.session_state[f"prod_name_{new_id}"] = prod_name + " (Copy)"
-        st.session_state[f"prompt_{new_id}"] = prompt_val
-        st.session_state[f"copied_prod_imgs_{new_id}"] = prod_imgs
-        st.session_state[f"copied_ref_imgs_{new_id}"] = ref_imgs
-        st.session_state["row_counter"] += 1
-
-    def delete_row(idx):
-        if len(st.session_state["upload_rows"]) > 1:
-            st.session_state["upload_rows"].pop(idx)
-            
-    def remove_copied_image(state_key, idx):
-        if state_key in st.session_state:
-            new_list = list(st.session_state[state_key])
-            if 0 <= idx < len(new_list):
-                new_list.pop(idx)
-                st.session_state[state_key] = new_list
-
-    # Render table headers
-    cols = st.columns([0.5, 2, 2.5, 2.5, 2.5, 2])
-    cols[0].write("**S No.**")
-    cols[1].write("**Product Name**")
-    cols[2].write("**Product Image(s)**")
-    cols[3].write("**Reference Image(s)**")
-    cols[4].write("**Prompt**")
-    cols[5].write("**Actions**")
+    st.write("#### 1. Image Pool")
+    uploaded_files = st.file_uploader(
+        "Drop all images here (Products, Backgrounds, Faces, etc.)", 
+        type=["jpg", "jpeg", "png", "webp"], 
+        accept_multiple_files=True
+    )
     
-    for i, row in enumerate(st.session_state["upload_rows"]):
-        r_id = row["id"]
-        cols = st.columns([0.5, 2, 2.5, 2.5, 2.5, 2])
-        
-        with cols[0]:
-            st.write(f"**{i+1}**")
-            
-        with cols[1]:
-            st.text_input("Name", key=f"prod_name_{r_id}", label_visibility="collapsed", placeholder="Name...")
-            
-        with cols[2]:
-            st.file_uploader("Products", key=f"prod_imgs_{r_id}", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, label_visibility="collapsed")
-            copied_prod = st.session_state.get(f"copied_prod_imgs_{r_id}", [])
-            if copied_prod and not st.session_state.get(f"prod_imgs_{r_id}"):
-                for img_idx, img in enumerate(copied_prod):
-                    c1, c2 = st.columns([0.85, 0.15])
-                    with c1:
-                        st.caption(f"📎 {img.name}")
-                    with c2:
-                        st.button("✖", key=f"rm_p_{r_id}_{img_idx}", on_click=remove_copied_image, args=(f"copied_prod_imgs_{r_id}", img_idx), help="Remove image")
-            
-        with cols[3]:
-            st.file_uploader("References", key=f"ref_imgs_{r_id}", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, label_visibility="collapsed")
-            copied_ref = st.session_state.get(f"copied_ref_imgs_{r_id}", [])
-            if copied_ref and not st.session_state.get(f"ref_imgs_{r_id}"):
-                for img_idx, img in enumerate(copied_ref):
-                    c1, c2 = st.columns([0.85, 0.15])
-                    with c1:
-                        st.caption(f"📎 {img.name}")
-                    with c2:
-                        st.button("✖", key=f"rm_r_{r_id}_{img_idx}", on_click=remove_copied_image, args=(f"copied_ref_imgs_{r_id}", img_idx), help="Remove image")
-            
-        with cols[4]:
-            st.text_area("Prompt", key=f"prompt_{r_id}", label_visibility="collapsed", placeholder="Prompt...", height=68)
-            
-        with cols[5]:
-            act_cols = st.columns(3)
-            with act_cols[0]:
-                st.button("➕", key=f"add_{r_id}", on_click=add_row, help="Add row at bottom")
-            with act_cols[1]:
-                st.button("📋", key=f"dup_{r_id}", on_click=duplicate_row, args=(i,), help="Duplicate row (copies text)")
-            with act_cols[2]:
-                st.button("🗑️", key=f"del_{r_id}", on_click=delete_row, args=(i,), help="Delete row")
+    # Process new uploads
+    if uploaded_files:
+        for f in uploaded_files:
+            if f.name not in st.session_state["workspace_files"]:
+                st.session_state["workspace_files"][f.name] = {
+                    "data": f.getvalue(),
+                    "type": "Product Image",  # Default type
+                    "mime": f.type
+                }
                 
+    if not st.session_state["workspace_files"]:
+        st.info("Upload some images to populate your workspace.")
+    else:
+        # Display the pool as a grid of tiles
+        st.write("Categorize your uploaded images:")
+        
+        # We'll use Streamlit columns to make a grid (e.g., 4 or 5 columns wide)
+        file_names = list(st.session_state["workspace_files"].keys())
+        cols_per_row = 5
+        
+        for i in range(0, len(file_names), cols_per_row):
+            cols = st.columns(cols_per_row)
+            for j in range(cols_per_row):
+                if i + j < len(file_names):
+                    fname = file_names[i + j]
+                    file_info = st.session_state["workspace_files"][fname]
+                    
+                    with cols[j]:
+                        with st.container(border=True):
+                            st.image(file_info["data"], use_container_width=True)
+                            st.caption(f"📄 {fname}")
+                            
+                            # Type selector
+                            IMG_TYPES = ["Product Image", "RF Setting", "Background Setting", "Model Face"]
+                            current_index = IMG_TYPES.index(file_info["type"]) if file_info["type"] in IMG_TYPES else 0
+                            
+                            new_type = st.selectbox(
+                                "Category", 
+                                IMG_TYPES, 
+                                index=current_index, 
+                                key=f"cat_{fname}",
+                                label_visibility="collapsed"
+                            )
+                            if new_type != file_info["type"]:
+                                st.session_state["workspace_files"][fname]["type"] = new_type
+                                st.rerun()
+                                
+                            if st.button("🗑️ Remove", key=f"del_{fname}", use_container_width=True):
+                                del st.session_state["workspace_files"][fname]
+                                st.rerun()
+
     st.markdown("---")
     
-    # System prompt at the bottom of the table
+    # --- 2. THE MAPPING AREA ---
+    st.write("#### 2. Visual Recipe Mapping")
+    st.write("Group your categorized images together into generation requests.")
+    
+    if "mappings" not in st.session_state:
+        # A mapping is {id: int, name: str, products: [], backgrounds: [], faces: [], rf_settings: [], prompt: str}
+        st.session_state["mappings"] = [{"id": 0, "name": "Mapping 1"}]
+        st.session_state["map_counter"] = 1
+        
+    def add_mapping():
+        new_id = st.session_state["map_counter"]
+        st.session_state["mappings"].append({"id": new_id, "name": f"Mapping {new_id + 1}"})
+        st.session_state["map_counter"] += 1
+        
+    def duplicate_mapping(idx):
+        original = st.session_state["mappings"][idx]
+        new_id = st.session_state["map_counter"]
+        
+        # Clone data from session state widgets to prepopulate
+        o_id = original["id"]
+        st.session_state[f"map_name_{new_id}"] = st.session_state.get(f"map_name_{o_id}", original["name"]) + " (Copy)"
+        st.session_state[f"map_prompt_{new_id}"] = st.session_state.get(f"map_prompt_{o_id}", "")
+        st.session_state[f"map_prod_{new_id}"] = st.session_state.get(f"map_prod_{o_id}", [])
+        st.session_state[f"map_bg_{new_id}"] = st.session_state.get(f"map_bg_{o_id}", [])
+        st.session_state[f"map_face_{new_id}"] = st.session_state.get(f"map_face_{o_id}", [])
+        st.session_state[f"map_rf_{new_id}"] = st.session_state.get(f"map_rf_{o_id}", [])
+        
+        st.session_state["mappings"].insert(idx + 1, {"id": new_id, "name": ""})
+        st.session_state["map_counter"] += 1
+        
+    def delete_mapping(idx):
+        if len(st.session_state["mappings"]) > 1:
+            st.session_state["mappings"].pop(idx)
+            
+    # Helper to get lists of files by category
+    def get_files_by_type(category):
+        return [fname for fname, info in st.session_state.get("workspace_files", {}).items() if info["type"] == category]
+        
+    all_prods = get_files_by_type("Product Image")
+    all_bgs = get_files_by_type("Background Setting")
+    all_faces = get_files_by_type("Model Face")
+    all_rfs = get_files_by_type("RF Setting")
+
+    # Render Mapping Blocks
+    for i, mapping in enumerate(st.session_state["mappings"]):
+        m_id = mapping["id"]
+        
+        with st.container(border=True):
+            head_col1, head_col2, head_col3 = st.columns([0.7, 0.15, 0.15])
+            with head_col1:
+                st.text_input("Mapping Name (e.g., Red Shirts in Studio)", value=mapping["name"], key=f"map_name_{m_id}", label_visibility="collapsed")
+            with head_col2:
+                st.button("📋 Duplicate", key=f"dup_map_{m_id}", on_click=duplicate_mapping, args=(i,), use_container_width=True)
+            with head_col3:
+                st.button("🗑️ Delete", key=f"del_map_{m_id}", on_click=delete_mapping, args=(i,), use_container_width=True)
+                
+            col1, col2 = st.columns(2)
+            
+            # Helper function to render a visual picker using pills + images
+            # Helper function to render a visual picker using an image grid and checkboxes
+            def visual_multi_picker(label, options, key_prefix):
+                st.write(f"**{label}**")
+                if not options:
+                    st.info(f"No {label.split(' ')[1]} images uploaded yet.")
+                    return []
+                    
+                selected = []
+                
+                # Use a scrollable container if there are many options
+                with st.container(height=250, border=True):
+                    cols_per_row = 4
+                    for i in range(0, len(options), cols_per_row):
+                        cols = st.columns(cols_per_row)
+                        for j in range(cols_per_row):
+                            if i + j < len(options):
+                                fname = options[i+j]
+                                with cols[j]:
+                                    if fname in st.session_state.get("workspace_files", {}):
+                                        img_data = st.session_state["workspace_files"][fname]["data"]
+                                        st.image(img_data, use_container_width=True)
+                                        
+                                        # Use a checkbox right underneath the thumbnail for selection
+                                        is_checked = st.checkbox(
+                                            fname[:15] + ".." if len(fname) > 15 else fname, 
+                                            key=f"chk_{key_prefix}_{fname}"
+                                        )
+                                        if is_checked:
+                                            selected.append(fname)
+                                            
+                st.write("") # Spacing formatting
+                return selected
+            
+            with col1:
+                sel_prods = visual_multi_picker("🛍️ Product Images (Required)", all_prods, f"map_prod_{m_id}")
+                st.session_state[f"map_prod_{m_id}"] = sel_prods
+                
+                sel_bgs = visual_multi_picker("🖼️ Background Settings (Optional)", all_bgs, f"map_bg_{m_id}")
+                st.session_state[f"map_bg_{m_id}"] = sel_bgs
+                
+            with col2:
+                sel_faces = visual_multi_picker("👤 Model Faces (Optional)", all_faces, f"map_face_{m_id}")
+                st.session_state[f"map_face_{m_id}"] = sel_faces
+                
+                sel_rfs = visual_multi_picker("📸 RF Settings / References (Optional)", all_rfs, f"map_rf_{m_id}")
+                st.session_state[f"map_rf_{m_id}"] = sel_rfs
+                
+            st.text_area("Shared Prompt (Applied to all combinations in this mapping)", key=f"map_prompt_{m_id}", placeholder="A high-end editorial shot...", height=68)
+            
+    st.button("➕ Add New Mapping", on_click=add_mapping, disabled=len(st.session_state.get("workspace_files", {})) == 0)
+    
+    st.markdown("---")
+    
+    # --- 3. GENERATION SETTINGS & EXECUTION ---
     st.write("### 🤖 Generation Settings")
     system_prompt_direct = st.text_area(
         "System Prompt (Default)",
@@ -725,25 +803,85 @@ with tab_direct:
         help="Instructions that guide image generation. You can change this if needed."
     )
     
-    max_workers_direct = st.slider("Parallel Workers (Direct Upload)", 1, 8, 3, help="Number of parallel generation requests")
+    max_workers_direct = st.slider("Parallel Workers (Workspace)", 1, 8, 3, help="Number of parallel generation requests")
     
-    # Forecast cost for Direct Upload
+    # Calculate Total Permutations
+    total_permutations = 0
+    items_to_process = []
+    
+    for mapping in st.session_state["mappings"]:
+        m_id = mapping["id"]
+        prods = st.session_state.get(f"map_prod_{m_id}", [])
+        bgs = st.session_state.get(f"map_bg_{m_id}", [])
+        faces = st.session_state.get(f"map_face_{m_id}", [])
+        rfs = st.session_state.get(f"map_rf_{m_id}", [])
+        prompt_txt = st.session_state.get(f"map_prompt_{m_id}", "")
+        map_name = st.session_state.get(f"map_name_{m_id}", f"Map_{m_id}")
+        
+        if not prods:
+            continue
+            
+        # Musical chairs: The user explicitly stated that ALL selected product images in a single mapping 
+        # belong to the SAME product (various angles/shots).
+        # We should NOT iterate multiple times for each product image. 
+        # Instead, it's 1 generation per mapping block.
+        
+        total_permutations += 1
+        
+        # Gather PIL images for this specific permutation
+        def load_workspace_img(fname):
+            try:
+                img_bytes = st.session_state["workspace_files"][fname]["data"]
+                img = Image.open(io.BytesIO(img_bytes))
+                img.load()
+                return {"name": Path(fname).stem, "filename": fname, "image": img}
+            except Exception:
+                return None
+        
+        # Treat the first product image as the primary product
+        prod_pil = load_workspace_img(prods[0])
+        
+        ref_pils = []
+        
+        # Add any REMAINING product images as extra reference angles so the model understands the product better
+        if len(prods) > 1:
+            for extra_prod in prods[1:]:
+                loaded = load_workspace_img(extra_prod)
+                if loaded:
+                    loaded["name"] = f"Additional angle of the product - {loaded['name']}"
+                    ref_pils.append(loaded)
+                    
+        for bg in bgs:
+            loaded = load_workspace_img(bg)
+            if loaded:
+                loaded["name"] = f"Studio/background setting - {loaded['name']}"
+                ref_pils.append(loaded)
+        for face in faces:
+            loaded = load_workspace_img(face)
+            if loaded:
+                loaded["name"] = f"Model face reference - {loaded['name']}"
+                ref_pils.append(loaded)
+        for rf in rfs:
+            loaded = load_workspace_img(rf)
+            if loaded:
+                loaded["name"] = f"Final style reference - {loaded['name']}"
+                ref_pils.append(loaded)
+                    
+        if prod_pil:
+            items_to_process.append({
+                "product_id": f"{map_name}_{Path(prods[0]).stem}",
+                "prompt": prompt_txt,
+                "prod_files": [prod_pil],
+                "ref_files": ref_pils  # Contains combined backgrounds, faces, rfs, and extra product angles
+            })
+
+    # Forecast cost
     estimated_tokens = 600
-    est_usd, est_inr = calculate_real_cost(
-        model_name,
-        estimated_tokens,
-        images=1
-    )
-    # Count rows that have both name and images
-    valid_rows_count = sum(
-        1 for row in st.session_state["upload_rows"] 
-        if st.session_state.get(f"prod_name_{row['id']}", "").strip() 
-        and (st.session_state.get(f"prod_imgs_{row['id']}", []) or st.session_state.get(f"copied_prod_imgs_{row['id']}", []))
-    )
-    forecast_total = est_inr * valid_rows_count
+    est_usd, est_inr = calculate_real_cost(model_name, estimated_tokens, images=1)
+    forecast_total = est_inr * total_permutations
     
-    if valid_rows_count > 0:
-        st.info(f"**Estimated Cost for {valid_rows_count} items:** ~₹{round(forecast_total, 2)} (₹{est_inr}/image)")
+    if total_permutations > 0:
+        st.info(f"**Total Permutations Calculated: {total_permutations}** (Estimated Cost: ~₹{round(forecast_total, 2)})")
     
     custom_folder_direct = st.text_input("Drive Save Folder Name (Optional)", key="drive_folder_direct", placeholder="e.g. Summer Collection 2026", help="Overrides the default Batch ID folder name in Google Drive.")
     
@@ -751,31 +889,9 @@ with tab_direct:
         gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=1000000, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
         gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=4)
 
-    if st.button("🚀 Start Generation (Direct Upload)", use_container_width=True):
-        # Gather data from session state
-        items_to_process = []
-        for row in st.session_state["upload_rows"]:
-            r_id = row["id"]
-            p_name = st.session_state.get(f"prod_name_{r_id}", "").strip()
-            p_prompt = st.session_state.get(f"prompt_{r_id}", "").strip()
-            p_imgs = st.session_state.get(f"prod_imgs_{r_id}", [])
-            if not p_imgs:
-                p_imgs = st.session_state.get(f"copied_prod_imgs_{r_id}", [])
-                
-            r_imgs = st.session_state.get(f"ref_imgs_{r_id}", [])
-            if not r_imgs:
-                r_imgs = st.session_state.get(f"copied_ref_imgs_{r_id}", [])
-            
-            if p_name and p_imgs:
-                items_to_process.append({
-                    "product_id": p_name,
-                    "prompt": p_prompt,
-                    "prod_files": p_imgs,
-                    "ref_files": r_imgs
-                })
-        
+    if st.button("🚀 Start Generation (Workspace)", use_container_width=True):
         if not items_to_process:
-            st.error("⚠️ Please fill in at least one row with a Product Name and Product Image(s).")
+            st.error("⚠️ Please build at least one valid Mapping with Product Images.")
         else:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -790,34 +906,13 @@ with tab_direct:
             all_results = [None] * total
             all_gen_images = []
             
-            def process_direct_row(index, item):
+            def process_workspace_item(index, item):
                 product_id = item["product_id"]
+                product_imgs = item["prod_files"]
+                reference_imgs = item["ref_files"]
                 
-                # Convert UploadedFiles to dicts with PIL Images
-                product_imgs = []
-                for f in item["prod_files"]:
-                    try:
-                        f.seek(0)
-                        img = Image.open(f)
-                        img.load()
-                        product_imgs.append({"name": Path(f.name).stem, "filename": f.name, "image": img})
-                    except Exception as e:
-                        return {"product_id": product_id, "status": "Failed", "generated_file": "", "error": f"Failed to open product image {f.name}: {e}"}, None
-                        
-                reference_imgs = []
-                for f in item["ref_files"]:
-                    try:
-                        f.seek(0)
-                        img = Image.open(f)
-                        img.load()
-                        reference_imgs.append({"name": Path(f.name).stem, "filename": f.name, "image": img})
-                    except Exception as e:
-                        return {"product_id": product_id, "status": "Failed", "generated_file": "", "error": f"Failed to open reference image {f.name}: {e}"}, None
-                
-                # Generate
                 try:
                     content_parts = build_gemini_content(product_imgs, reference_imgs, item["prompt"])
-                    
                     final_sys_prompt = system_prompt_direct + f"\n\nOUTPUT ASPECT RATIO: {gen_aspect_ratio}"
                     
                     config_kwargs = {
@@ -834,15 +929,9 @@ with tab_direct:
                     )
                     
                     usage = getattr(response, "usage_metadata", None)
-                    prompt_tokens = 0
-                    if usage:
-                        prompt_tokens = getattr(usage, "prompt_token_count", 0)
+                    prompt_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
                         
-                    usd_cost, inr_cost = calculate_real_cost(
-                        model_name,
-                        prompt_tokens,
-                        images=1
-                    )
+                    usd_cost, inr_cost = calculate_real_cost(model_name, prompt_tokens, images=1)
                     
                     if response.candidates:
                         for part in response.candidates[0].content.parts:
@@ -870,9 +959,9 @@ with tab_direct:
                 except Exception as e:
                     return {"product_id": product_id, "status": "Failed", "Prompt Tokens": 0, "Cost (USD)": 0.0, "Cost (INR)": 0.0, "generated_file": "", "error": str(e)}, None
 
-            status_text.text(f"🚀 Processing {total} products with {max_workers_direct} workers...")
+            status_text.text(f"🚀 Processing {total} variants with {max_workers_direct} workers...")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers_direct) as executor:
-                future_to_index = {executor.submit(process_direct_row, i, item): i for i, item in enumerate(items_to_process)}
+                future_to_index = {executor.submit(process_workspace_item, i, item): i for i, item in enumerate(items_to_process)}
                 for future in concurrent.futures.as_completed(future_to_index):
                     idx = future_to_index[future]
                     try:
