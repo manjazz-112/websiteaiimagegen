@@ -749,7 +749,7 @@ with tab_direct:
     
     with st.expander("🛠️ Advanced Gen Settings", expanded=False):
         gen_seed = st.number_input("Seed (0 for random)", min_value=0, max_value=2147483647, value=1000000, step=1, help="Use a specific seed for reproducible results (Max: 2147483647).")
-        gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=0)
+        gen_aspect_ratio = st.selectbox("Aspect Ratio", ["1:1", "9:16", "16:9", "4:3", "3:4"], index=4)
 
     if st.button("🚀 Start Generation (Direct Upload)", use_container_width=True):
         # Gather data from session state
